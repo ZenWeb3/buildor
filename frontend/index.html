@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Sculpt 3D</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0a0a0f; overflow: hidden; font-family: -apple-system, sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        
+        #ui {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: white;
+            z-index: 100;
+        }
+        
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 14px 18px;
+            border-radius: 12px;
+            font-size: 13px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        #status.connected { border-color: rgba(0, 255, 136, 0.4); }
+        #status.disconnected { border-color: rgba(255, 68, 68, 0.4); }
+        
+        .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .dot.green { background: #00ff88; box-shadow: 0 0 10px #00ff88; }
+        .dot.red { background: #ff4444; box-shadow: 0 0 10px #ff4444; }
+        
+        #controls h3 { margin-bottom: 8px; font-weight: 600; color: #00ff88; }
+        #controls div { line-height: 1.8; }
+        
+        kbd {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        
+        #stats {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: white;
+        }
+        
+        #mode-display {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        #webcam-pip {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 280px;
+            height: 210px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid rgba(0, 255, 136, 0.4);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            z-index: 9999;
+        }
+        
+        #webcam-pip img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    
+    <div id="ui">
+        <div id="status" class="panel disconnected">
+            <span class="dot red" id="status-dot"></span>
+            <span id="status-text">Connecting...</span>
+        </div>
+        <div id="controls" class="panel">
+            <h3>✋ Gestures</h3>
+            <div><kbd>Pinch</kbd> Place cube</div>
+            <div><kbd>🖐️ Open palm</kbd> Rotate</div>
+            <div><kbd>✌️ 2 fingers</kbd> Zoom in</div>
+            <div><kbd>☝️ 1 finger</kbd> Zoom out</div>
+            <div><kbd>🤟 3 fingers</kbd> Undo</div>
+            <div><kbd>Fist</kbd> Clear all</div>
+            <br>
+            <h3>⌨️ Keys</h3>
+            <div><kbd>C</kbd> Color  <kbd>Z</kbd> Undo  <kbd>R</kbd> Reset</div>
+        </div>
+    </div>
+    
+    <div id="stats" class="panel">
+        <div id="mode-display">✋ Sculpt</div>
+        <div>Cubes: <span id="cube-count">0</span></div>
+    </div>
+    
+    <div id="webcam-pip">
+        <img id="webcam-img" alt="Webcam feed">
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // === SCENE SETUP ===
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x080810);
+        
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(4, 4, 6);
+        camera.lookAt(0, 0, 0);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+        
+        // Bloom
+        const composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera));
+        composer.addPass(new UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            0.6, 0.4, 0.85
+        ));
+        
+        // Orbit controls (for mouse backup)
+        const orbitControls = new OrbitControls(camera, renderer.domElement);
+        orbitControls.enableDamping = true;
+        orbitControls.dampingFactor = 0.05;
+        
+        // === GRID ===
+        const GRID_SIZE = 0.3;
+        const gridHelper = new THREE.GridHelper(12, 40, 0x444444, 0x222222);
+        scene.add(gridHelper);
+        
+        // === LIGHTING ===
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        
+        const mainLight = new THREE.DirectionalLight(0xffffff, 1);
+        mainLight.position.set(5, 10, 5);
+        scene.add(mainLight);
+        
+        const fillLight = new THREE.DirectionalLight(0x4488ff, 0.3);
+        fillLight.position.set(-5, -3, -5);
+        scene.add(fillLight);
+        
+        const cursorLight = new THREE.PointLight(0x00ff88, 1.5, 4);
+        scene.add(cursorLight);
+        
+        // === SCULPT GROUP (rotates/scales together) ===
+        const sculptGroup = new THREE.Group();
+        scene.add(sculptGroup);
+        
+        // === CUBE PLACEMENT (Minecraft style) ===
+        const placedCubes = new Map();
+        const cubesList = []; // Keep order for undo
+        
+        function getKey(pos) {
+            return `${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}`;
+        }
+        
+        // Find nearest cube face to snap to
+        function findSnapPosition(cursorPos) {
+            if (cubesList.length === 0) {
+                // First cube - snap to grid at origin level
+                return snapToGrid(cursorPos);
+            }
+            
+            let nearestDist = Infinity;
+            let snapPos = null;
+            
+            // Check each existing cube's 6 faces
+            const offsets = [
+                { x: GRID_SIZE, y: 0, z: 0 },
+                { x: -GRID_SIZE, y: 0, z: 0 },
+                { x: 0, y: GRID_SIZE, z: 0 },
+                { x: 0, y: -GRID_SIZE, z: 0 },
+                { x: 0, y: 0, z: GRID_SIZE },
+                { x: 0, y: 0, z: -GRID_SIZE },
+            ];
+            
+            for (const cube of cubesList) {
+                for (const offset of offsets) {
+                    const facePos = new THREE.Vector3(
+                        cube.position.x + offset.x,
+                        cube.position.y + offset.y,
+                        cube.position.z + offset.z
+                    );
+                    
+                    // Skip if already occupied
+                    if (placedCubes.has(getKey(facePos))) continue;
+                    
+                    const dist = cursorPos.distanceTo(facePos);
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        snapPos = facePos.clone();
+                    }
+                }
+            }
+            
+            // If cursor is too far from any face, allow free placement
+            if (nearestDist > GRID_SIZE * 3) {
+                return snapToGrid(cursorPos);
+            }
+            
+            return snapPos;
+        }
+        
+        // Create cube at position
+        function createCube(position, color) {
+            const snapped = position.clone();
+            const key = getKey(snapped);
+            
+            if (placedCubes.has(key)) return;
+            
+            const geo = new THREE.BoxGeometry(GRID_SIZE * 0.92, GRID_SIZE * 0.92, GRID_SIZE * 0.92);
+            const mat = new THREE.MeshStandardMaterial({
+                color: color,
+                emissive: color,
+                emissiveIntensity: 0.15,
+                roughness: 0.4,
+                metalness: 0.6
+            });
+            
+            const cube = new THREE.Mesh(geo, mat);
+            cube.position.copy(snapped);
+            
+            // Edge glow
+            const edges = new THREE.LineSegments(
+                new THREE.EdgesGeometry(geo),
+                new THREE.LineBasicMaterial({ color: color, opacity: 0.6, transparent: true })
+            );
+            cube.add(edges);
+            
+            sculptGroup.add(cube);
+            placedCubes.set(key, cube);
+            cubesList.push(cube);
+            document.getElementById('cube-count').textContent = placedCubes.size;
+        }
+        
+        // Undo last cube
+        function undoLastCube() {
+            if (cubesList.length === 0) return;
+            
+            const cube = cubesList.pop();
+            const key = getKey(cube.position);
+            
+            sculptGroup.remove(cube);
+            cube.geometry.dispose();
+            cube.material.dispose();
+            placedCubes.delete(key);
+            
+            document.getElementById('cube-count').textContent = placedCubes.size;
+        }
+        
+        // Clear all
+        function clearAll() {
+            cubesList.forEach(cube => {
+                sculptGroup.remove(cube);
+                cube.geometry.dispose();
+                cube.material.dispose();
+            });
+            placedCubes.clear();
+            cubesList.length = 0;
+            targetRotationX = 0;
+            targetRotationY = 0;
+            sculptGroup.scale.set(1, 1, 1);
+            document.getElementById('cube-count').textContent = 0;
+        }
+        
+        // === COLORS ===
+        const colors = [
+            0x00ff88, 0xff0088, 0x00ffff, 0xffff00,
+            0xff8800, 0x8800ff, 0xff4444, 0x44ff44
+        ];
+        let colorIndex = 0;
+        
+        // Ghost preview cube
+        const ghostGeo = new THREE.BoxGeometry(GRID_SIZE * 0.92, GRID_SIZE * 0.92, GRID_SIZE * 0.92);
+        const ghostMat = new THREE.MeshBasicMaterial({ 
+            color: colors[colorIndex], 
+            transparent: true, 
+            opacity: 0.3,
+            wireframe: true
+        });
+        const ghostCube = new THREE.Mesh(ghostGeo, ghostMat);
+        sculptGroup.add(ghostCube);
+        
+        // Smoothing for rotation
+        let targetRotationX = 0;
+        let targetRotationY = 0;
+        let currentRotationX = 0;
+        let currentRotationY = 0;
+        const ROTATION_SMOOTHING = 0.15;
+        
+        // === CURSOR ===
+        const cursorGeo = new THREE.BoxGeometry(GRID_SIZE * 0.95, GRID_SIZE * 0.95, GRID_SIZE * 0.95);
+        const cursorMat = new THREE.MeshBasicMaterial({ 
+            color: colors[colorIndex], 
+            transparent: true, 
+            opacity: 0.35,
+            wireframe: false
+        });
+        const cursor = new THREE.Mesh(cursorGeo, cursorMat);
+        
+        // Wireframe overlay
+        const cursorWire = new THREE.LineSegments(
+            new THREE.EdgesGeometry(cursorGeo),
+            new THREE.LineBasicMaterial({ color: colors[colorIndex], opacity: 0.8, transparent: true })
+        );
+        cursor.add(cursorWire);
+        scene.add(cursor);
+        
+        // === HELPERS ===
+        function snapToGrid(pos) {
+            return new THREE.Vector3(
+                Math.round(pos.x / GRID_SIZE) * GRID_SIZE,
+                Math.round(pos.y / GRID_SIZE) * GRID_SIZE,
+                Math.round(pos.z / GRID_SIZE) * GRID_SIZE
+            );
+        }
+        
+        function handToWorld(h) {
+            return new THREE.Vector3(
+                (h.x - 0.5) * 6,
+                (h.y - 0.5) * -6,
+                h.z * 8
+            );
+        }
+        
+        // === UI ===
+        function setMode(text) {
+            document.getElementById('mode-display').textContent = text;
+        }
+        
+        function setConnected(yes) {
+            document.getElementById('status').className = 'panel ' + (yes ? 'connected' : 'disconnected');
+            document.getElementById('status-dot').className = 'dot ' + (yes ? 'green' : 'red');
+            document.getElementById('status-text').textContent = yes ? 'Tracking active' : 'Connecting...';
+        }
+        
+        // === WEBSOCKET ===
+        let ws;
+        
+        function connect() {
+            ws = new WebSocket('ws://localhost:8765');
+            ws.onopen = () => setConnected(true);
+            ws.onclose = () => { setConnected(false); setTimeout(connect, 2000); };
+            ws.onerror = () => {};
+            ws.onmessage = (e) => handleHands(JSON.parse(e.data));
+        }
+        
+        // === HAND DATA PROCESSING ===
+        let smoothCursor = new THREE.Vector3();
+        let lastOpenPalmPos = null;
+        let lastPinchState = false;
+        let undoTriggered = false;
+        const webcamImg = document.getElementById('webcam-img');
+        
+        function handleHands(data) {
+            // Update webcam PiP if frame is included
+            if (data.frame) {
+                webcamImg.src = 'data:image/jpeg;base64,' + data.frame;
+            }
+            
+            if (!data.hands || data.hands.length === 0) {
+                cursor.visible = false;
+                ghostCube.visible = false;
+                lastOpenPalmPos = null;
+                return;
+            }
+            
+            cursor.visible = true;
+            
+            const hand = data.hands[0];
+            const pos = handToWorld(hand.index_tip);
+            const fingersUp = hand.gestures.fingers_up || 0;
+            
+            // Smooth cursor
+            smoothCursor.lerp(pos, 0.4);
+            
+            // Find snap position (Minecraft style)
+            const snapPos = findSnapPosition(smoothCursor);
+            
+            // Update cursor and ghost preview
+            cursor.position.copy(snapPos);
+            ghostCube.position.copy(snapPos);
+            ghostCube.visible = true;
+            ghostCube.material.color.setHex(colors[colorIndex]);
+            cursorLight.position.copy(smoothCursor);
+            
+            // FIST = Clear all
+            if (hand.gestures.fist) {
+                setMode('🗑️ Clear');
+                clearAll();
+                lastOpenPalmPos = null;
+                lastPinchState = false;
+                return;
+            }
+            
+            // 3 FINGERS = Undo
+            if (fingersUp === 3) {
+                setMode('↩️ Undo');
+                if (!undoTriggered) {
+                    undoLastCube();
+                    undoTriggered = true;
+                }
+                lastOpenPalmPos = null;
+                return;
+            } else {
+                undoTriggered = false;
+            }
+            
+            // PINCH = Place cube (only on pinch START, not hold)
+            if (hand.gestures.pinch) {
+                if (!lastPinchState) {
+                    setMode('🎨 Place');
+                    createCube(snapPos, colors[colorIndex]);
+                } else {
+                    setMode('🎨 Painting');
+                    createCube(snapPos, colors[colorIndex]);
+                }
+                lastPinchState = true;
+                lastOpenPalmPos = null;
+            }
+            // 2 FINGERS = Zoom in
+            else if (fingersUp === 2) {
+                setMode('🔍 Zoom In ✌️');
+                sculptGroup.scale.multiplyScalar(1.015);
+                sculptGroup.scale.clampScalar(0.2, 5);
+                lastOpenPalmPos = null;
+                lastPinchState = false;
+            }
+            // 1 FINGER = Zoom out
+            else if (fingersUp === 1) {
+                setMode('🔍 Zoom Out ☝️');
+                sculptGroup.scale.multiplyScalar(0.985);
+                sculptGroup.scale.clampScalar(0.2, 5);
+                lastOpenPalmPos = null;
+                lastPinchState = false;
+            }
+            // OPEN PALM (4+ fingers) = Rotate
+            else if (fingersUp >= 4) {
+                setMode('🔄 Rotate');
+                if (lastOpenPalmPos !== null) {
+                    const dx = smoothCursor.x - lastOpenPalmPos.x;
+                    const dy = smoothCursor.y - lastOpenPalmPos.y;
+                    
+                    targetRotationY += dx * 0.8;
+                    targetRotationX += dy * 0.8;
+                }
+                lastOpenPalmPos = smoothCursor.clone();
+                lastPinchState = false;
+            }
+            else {
+                setMode('✋ Ready');
+                lastOpenPalmPos = null;
+                lastPinchState = false;
+            }
+        }
+        
+        // === KEYBOARD ===
+        document.addEventListener('keydown', (e) => {
+            switch(e.key.toLowerCase()) {
+                case 'c':
+                    colorIndex = (colorIndex + 1) % colors.length;
+                    cursorMat.color.setHex(colors[colorIndex]);
+                    cursorWire.material.color.setHex(colors[colorIndex]);
+                    cursorLight.color.setHex(colors[colorIndex]);
+                    ghostMat.color.setHex(colors[colorIndex]);
+                    break;
+                case 'g':
+                    gridHelper.visible = !gridHelper.visible;
+                    break;
+                case 'r':
+                    targetRotationX = 0;
+                    targetRotationY = 0;
+                    sculptGroup.scale.set(1, 1, 1);
+                    camera.position.set(4, 4, 6);
+                    camera.lookAt(0, 0, 0);
+                    break;
+                case 'z':
+                    undoLastCube();
+                    break;
+            }
+        });
+        
+        // === RESIZE ===
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // === ANIMATE ===
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Smooth rotation interpolation
+            currentRotationX += (targetRotationX - currentRotationX) * ROTATION_SMOOTHING;
+            currentRotationY += (targetRotationY - currentRotationY) * ROTATION_SMOOTHING;
+            
+            sculptGroup.rotation.x = currentRotationX;
+            sculptGroup.rotation.y = currentRotationY;
+            
+            orbitControls.update();
+            composer.render();
+        }
+        
+        connect();
+        animate();
+    </script>
+</body>
+</html>
