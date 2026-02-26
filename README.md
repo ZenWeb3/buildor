@@ -1,6 +1,6 @@
 # ✋ Hand Sculpt 3D
 
-Sculpt 3D voxel art using just your hands — Minecraft meets Iron Man.
+Sculpt 3D voxel art using just your hands
 
 ![Demo](demo.gif)
 
@@ -39,7 +39,7 @@ Sculpt 3D voxel art using just your hands — Minecraft meets Iron Man.
 ### 1. Clone & setup
 
 ```bash
-git clone https://github.com/yourusername/hand-sculpt.git
+git clone https://github.com/zenweb3/hand-sculpt.git
 cd hand-sculpt
 ```
 
@@ -138,4 +138,4 @@ Perfect for viral content:
 
 ---
 
-Built with 🔥 by [Your Name]
+Built with 🔥 by Zen ofc.
